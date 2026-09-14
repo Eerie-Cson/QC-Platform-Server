@@ -13,6 +13,7 @@ dist/
 # Project-specific data folders
 **/crosscheck/
 **/qc/
+**/platform-data
 
 # Logs
 *.log

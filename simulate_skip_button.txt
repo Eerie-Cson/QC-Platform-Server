@@ -1,0 +1,63 @@
+const video = document.querySelector('video');
+
+if (video) {
+  console.log('Loop active. RIGHT-CLICK anywhere on the page to STOP it.');
+
+  let isWaitingForBuffer = false;
+
+  const arrowLoop = setInterval(() => {
+    if (video.ended) {
+      clearInterval(arrowLoop);
+      console.log('Video finished! Loop cleared.');
+      return;
+    }
+
+    if (video.buffered.length > 0) {
+      const currentBufferEnd = video.buffered.end(video.buffered.length - 1);
+      const bufferAhead = currentBufferEnd - video.currentTime;
+
+      if (isWaitingForBuffer) {
+        // DYNAMIC RESUME: Only resume if the gray bar has built up to 15+ seconds ahead
+        if (bufferAhead >= 30) {
+          isWaitingForBuffer = false;
+          console.log(`▶️ Gray bar is now ${bufferAhead.toFixed(1)}s ahead. Resuming automation.`);
+        }
+      } else {
+        // TRIGGER PAUSE: Pause if the white bar gets within 15 seconds of the gray bar's end
+        if (bufferAhead < 15) {
+          isWaitingForBuffer = true;
+          console.log(`⏳ Buffer low (${bufferAhead.toFixed(1)}s ahead). Waiting for gray bar to load...`);
+        }
+      }
+    }
+
+    // FIRE KEY EVENT: Only runs if the video is playing and the buffer is healthy
+    if (!video.paused && !video.seeking && !isWaitingForBuffer) {
+      video.focus();
+      
+      const rightArrowEvent = new KeyboardEvent('keydown', {
+        key: 'ArrowRight',
+        code: 'ArrowRight',
+        keyCode: 39,
+        bubbles: true,
+        cancelable: true
+      });
+
+      video.dispatchEvent(rightArrowEvent);
+    }
+  }, 600);
+
+  // TRIGGER BUTTON: Right-click kill switch
+  const stopScript = (event) => {
+    event.preventDefault(); // Prevents the right-click menu from opening
+    clearInterval(arrowLoop); // Stops the loop
+    document.removeEventListener('contextmenu', stopScript); // Cleans up the listener
+    console.log('🛑 Automation stopped manually by right-click!');
+  };
+
+  // Listen for the right-click event
+  document.addEventListener('contextmenu', stopScript);
+
+} else {
+  console.log('Video element not found.');
+}
