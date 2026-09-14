@@ -1,0 +1,21 @@
+# Security (Crucial)
+.env
+
+# Dependencies
+node_modules/
+
+# Local/Backup data
+backup/
+
+# Build outputs
+dist/
+
+# Project-specific data folders
+**/crosscheck/
+**/qc/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*

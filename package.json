@@ -1,0 +1,37 @@
+{
+  "name": "qc-platform",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/server.js",
+    "run": "npm run build",
+    "process-qc": "npm run run && node dist/scripts/processQc.js && npm run start",
+    "process-crosscheck": "npm run run && node dist/scripts/processCrosschecks.js && npm run start",
+    "getPlatformData": "npm run run && node dist/scripts/new/processPlatform.js",
+    "process-qc2:json": "npm run run && node dist/scripts/new/processQc2.js --type json",
+    "process-qc2:csv": "npm run run && node dist/scripts/new/processQc2.js --type csv",
+    "rate": "npm run run && node dist/scripts/new/autoRater.js",
+    "start:platform:json": "npm run getPlatformData && npm run process-qc2:json && npm run start",
+    "start:sheet:csv": "npm run getPlatformData && npm run process-qc2:csv && npm run start"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "devDependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "@types/json2csv": "^5.0.7",
+    "@types/node": "^26.4.0",
+    "cors": "^2.8.6",
+    "csv-parser": "^3.2.1",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "json2csv": "^6.0.0-alpha.2",
+    "playwright": "^1.62.1",
+    "ts-node": "^10.9.2",
+    "typescript": "^7.0.2"
+  }
+}
