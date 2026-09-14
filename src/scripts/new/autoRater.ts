@@ -3,57 +3,38 @@ import { chromium } from "playwright";
 import fs from "fs";
 import path from "path";
 
+// Adjust this path to wherever your shared types file lives
+import { Ratings, Session, Severity, Seated, Environment } from "../../types";
+
 // ---------- Types ----------
 
-interface Ratings {
-  lighting?: string;
-  sharpness?: string;
-  handVisibility?: string;
-  fovFraming?: string;
-  cameraAngle?: string;
-  idle?: string;
-  seated?: string;
-  environment?: string;
-  other?: string;
-  comment?: string;
-  slowLoading?: boolean;
-  crosscheckComment?: string;
-}
-
-interface Entity {
-  email: string;
-  task: string;
-  minutes: string;
-  recordedTimestamp: string;
-  uploadedTimestamp: string;
-  sessionId: string;
-  link: string;
-  ratings: Ratings;
-  systemRating: string;
+// Entity = the shared Session plus the fields this script adds on top.
+interface Entity extends Session {
   faceVisible: boolean;
-  // Added by this script
   submitted?: boolean;
   submittedAt?: string;
 }
 
-// Maps JSON human-readable rating labels -> <option> values in the form
+// Maps the human-readable rating labels (which live in the enums) to the
+// <option> values used by the form.
 const ratingValueMap: Record<string, string> = {
-  "No issue": "NO_ISSUE",
-  Minor: "MINOR",
-  Major: "MAJOR",
-  "Standing/Moving": "STANDING_MOVING",
-  "Standing/ Moving": "STANDING_MOVING",
-  "Allow Seated": "ALLOWED_SEATED",
-  Seated: "SEATED",
-  "Correct Task": "CORRECT_TASK",
-  "Wrong Task": "WRONG_TASK",
+  [Severity.NoIssue]: "NO_ISSUE",
+  [Severity.Minor]: "MINOR",
+  [Severity.Major]: "MAJOR",
+  [Seated.StandingMoving]: "STANDING_MOVING",
+  "Standing/Moving": "STANDING_MOVING", // legacy alias
+  [Seated.AllowSeated]: "ALLOWED_SEATED",
+  [Seated.Seated]: "SEATED",
+  [Environment.CorrectTask]: "CORRECT_TASK",
+  [Environment.WrongTask]: "WRONG_TASK",
   Unavailable: "UNAVAILABLE",
   Processing: "PROCESSING",
 };
 
-// Maps JSON key -> form field `name` attribute
+// Maps Ratings key -> form field `name` attribute.
+// (`comment` and `crosscheckComment` are textareas, not selects.)
 const fieldMapping: Record<
-  keyof Omit<Ratings, "comment" | "slowLoading" | "crosscheckComment">,
+  keyof Omit<Ratings, "comment" | "crosscheckComment">,
   string
 > = {
   lighting: "lighting",
@@ -72,10 +53,6 @@ const isEmpty = (v: unknown): boolean =>
 
 // ---------- Helpers ----------
 
-/**
- * Persist the in-memory data array back to disk.
- * Called after each successful submission so progress survives a crash.
- */
 function writeResultsFile(jsonPath: string, data: Entity[]): void {
   fs.writeFileSync(jsonPath, JSON.stringify(data, null, 2), "utf8");
 }
@@ -125,14 +102,12 @@ function writeResultsFile(jsonPath: string, data: Entity[]): void {
 
     console.log(`\n[${index + 1}/${data.length}] Session: ${targetSessionId}`);
 
-    // ---- Skip if already submitted on a previous run ----
     if (entity.submitted === true) {
       console.log("  ⏭ Skipping: already marked as submitted.");
       alreadyDone++;
       continue;
     }
 
-    // ---- Skip if all rating fields are empty ----
     const ratingKeys = Object.keys(fieldMapping) as Array<
       keyof typeof fieldMapping
     >;
@@ -145,7 +120,6 @@ function writeResultsFile(jsonPath: string, data: Entity[]): void {
     }
 
     try {
-      // ---- Re-resolve the My Queue table (fresh after any navigation) ----
       const myQueueTable = page.locator("table").filter({
         has: page.locator("thead th", { hasText: "Duration" }),
       });
@@ -161,16 +135,13 @@ function writeResultsFile(jsonPath: string, data: Entity[]): void {
         continue;
       }
 
-      // ---- Click the Rate / Resume draft link ----
       await row.getByRole("link", { name: /Resume draft|rate/i }).click();
       console.log("  ✓ Clicked rate link.");
 
-      // ---- Wait for the rating form ----
       await page.waitForSelector("form select[name='lighting']", {
         timeout: 15_000,
       });
 
-      // ---- Set each dropdown ----
       for (const [jsonKey, formName] of Object.entries(fieldMapping)) {
         const rawValue = ratings[jsonKey as keyof Ratings];
         if (isEmpty(rawValue)) continue;
@@ -195,7 +166,6 @@ function writeResultsFile(jsonPath: string, data: Entity[]): void {
         }
       }
 
-      // ---- Fill notes textarea (optional) ----
       if (!isEmpty(ratings.comment)) {
         try {
           await page.fill(
@@ -209,32 +179,30 @@ function writeResultsFile(jsonPath: string, data: Entity[]): void {
         }
       }
 
-      // ---- Submit ----
       const submitButton = page
         .locator("form")
         .getByRole("button", { name: /Submit rating/i });
 
-      // await page.pause();
-      // break;
+      if (ratings.seated === Seated.AllowSeated) {
+        await page.pause();
+      }
+
+      await page.waitForTimeout(10_000);
 
       await submitButton.click();
       console.log("  → Clicked Submit rating.");
 
-      // Wait for the form to be unmounted (indicates the SPA moved away)
       await page
         .locator("form select[name='lighting']")
         .waitFor({ state: "detached", timeout: 20_000 });
 
-      // Then wait for the queue table to be visible again
       await page
         .locator("table thead th", { hasText: "Duration" })
         .first()
         .waitFor({ timeout: 20_000 });
 
-      // Small settle time for the DOM to fully swap
       await page.waitForTimeout(400);
 
-      // ---- Mark this entity as submitted and persist to disk ----
       entity.submitted = true;
       entity.submittedAt = new Date().toISOString();
       writeResultsFile(jsonPath, data);
@@ -247,10 +215,8 @@ function writeResultsFile(jsonPath: string, data: Entity[]): void {
       console.error(`  ✗ Failed on ${targetSessionId}: ${message}`);
       failed++;
 
-      // Pause so you can inspect what went wrong for this session
       await page.pause();
 
-      // Best-effort: if we're stuck on a form page, go back to the queue
       try {
         if (page.url() !== link) {
           await page.goto(link);
