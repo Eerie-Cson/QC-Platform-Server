@@ -19,7 +19,14 @@ export enum Environment {
 }
 
 // Other is a union of Severity values + two extras
-export type Other = Severity | "Unavailable" | "Processing";
+// export type Other = Severity | "Unavailable" | "Processing";
+export enum Other {
+  NoIssue = Severity.NoIssue,
+  Minor = Severity.Minor,
+  Major = Severity.Major,
+  Unavailable = "Unavailable",
+  Processing = "Processing",
+}
 
 // System rating enum – same as frontend
 export enum SystemRating {

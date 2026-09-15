@@ -4,7 +4,14 @@ import fs from "fs";
 import path from "path";
 
 // Adjust this path to wherever your shared types file lives
-import { Ratings, Session, Severity, Seated, Environment } from "../../types";
+import {
+  Ratings,
+  Session,
+  Severity,
+  Seated,
+  Environment,
+  Other,
+} from "../../types";
 
 // ---------- Types ----------
 
@@ -27,8 +34,8 @@ const ratingValueMap: Record<string, string> = {
   [Seated.Seated]: "SEATED",
   [Environment.CorrectTask]: "CORRECT_TASK",
   [Environment.WrongTask]: "WRONG_TASK",
-  Unavailable: "UNAVAILABLE",
-  Processing: "PROCESSING",
+  [Other.Unavailable]: "UNAVAILABLE",
+  [Other.Processing]: "PROCESSING",
 };
 
 // Maps Ratings key -> form field `name` attribute.
@@ -95,16 +102,30 @@ function writeResultsFile(jsonPath: string, data: Entity[]): void {
   let skipped = 0;
   let failed = 0;
   let alreadyDone = 0;
+  let skippedProcessing = 0;
 
   for (const [index, entity] of data.entries()) {
     const targetSessionId: string = entity.sessionId;
     const ratings: Ratings = entity.ratings ?? {};
+    const commentText = (ratings.comment ?? "").toLowerCase();
 
     console.log(`\n[${index + 1}/${data.length}] Session: ${targetSessionId}`);
 
     if (entity.submitted === true) {
       console.log("  ⏭ Skipping: already marked as submitted.");
       alreadyDone++;
+      continue;
+    }
+
+    if (
+      ratings.other === Other.Processing &&
+      commentText.includes("slow loading")
+    ) {
+      console.log(
+        "  ⏭ Skipping: other is Processing and comment contains 'slow loading'.",
+      );
+      skipped++;
+      skippedProcessing++;
       continue;
     }
 
@@ -183,11 +204,17 @@ function writeResultsFile(jsonPath: string, data: Entity[]): void {
         .locator("form")
         .getByRole("button", { name: /Submit rating/i });
 
-      if (ratings.seated === Seated.AllowSeated) {
-        await page.pause();
-      }
+      if (process.env.REVIEW_MODE === "true") {
+        if (
+          ratings.seated === Seated.AllowSeated ||
+          ratings.other === Other.Unavailable ||
+          ratings.other === Other.Processing
+        ) {
+          await page.pause();
+        }
 
-      await page.waitForTimeout(10_000);
+        await page.waitForTimeout(10_000);
+      }
 
       await submitButton.click();
       console.log("  → Clicked Submit rating.");
@@ -230,11 +257,12 @@ function writeResultsFile(jsonPath: string, data: Entity[]): void {
 
   console.log(
     `\n────── Summary ──────\n` +
-      `  Submitted:     ${submitted}\n` +
-      `  Already done:  ${alreadyDone}\n` +
-      `  Skipped:       ${skipped}\n` +
-      `  Failed:        ${failed}\n` +
-      `  Total:         ${data.length}`,
+      `  Submitted:          ${submitted}\n` +
+      `  Already done:       ${alreadyDone}\n` +
+      `  Skipped:            ${skipped}\n` +
+      `  Skipped (processing): ${skippedProcessing}\n` +
+      `  Failed:             ${failed}\n` +
+      `  Total:              ${data.length}`,
   );
 
   await page.pause();
