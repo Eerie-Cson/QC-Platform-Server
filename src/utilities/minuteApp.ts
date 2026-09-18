@@ -155,13 +155,13 @@ export async function getAllSessionRows(page: Page): Promise<SessionRow[]> {
     const cells = await row.$$("td");
     if (cells.length < 12) continue;
 
-    const email = (await cells[0].textContent())?.trim() || "";
-    const task = (await cells[4].textContent())?.trim() || "";
-    const minutesText = (await cells[7].textContent())?.trim() || "0";
+    const email = (await cells[1].textContent())?.trim() || "";
+    const task = (await cells[5].textContent())?.trim() || "";
+    const minutesText = (await cells[8].textContent())?.trim() || "0";
     const minutes = parseFloat(minutesText);
-    const sessionId = (await cells[1].textContent())?.trim() || "";
-    const recorded = (await cells[12].textContent())?.trim() || "";
-    const uploaded = (await cells[13].textContent())?.trim() || "";
+    const sessionId = (await cells[2].textContent())?.trim() || "";
+    const recorded = (await cells[13].textContent())?.trim() || "";
+    const uploaded = (await cells[14].textContent())?.trim() || "";
 
     const linkElement = await row.$('a[href*="/session/"]');
     const link = linkElement ? await linkElement.getAttribute("href") : null;
@@ -176,6 +176,8 @@ export async function getAllSessionRows(page: Page): Promise<SessionRow[]> {
       link,
     });
   }
+
+  console.log(sessionData, "sessionData");
   return sessionData;
 }
 

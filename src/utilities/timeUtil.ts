@@ -1,7 +1,11 @@
-export function formatToUTC8(isoStr: string): string {
+/**
+ * Renders an instant in the given IANA time zone as "MM/DD/YYYY, HH:MM AM/PM".
+ * Internal helper — don't call from business logic that needs comparison keys.
+ */
+function formatInTimeZone(isoStr: string, timeZone: string): string {
   const date = new Date(isoStr);
   return date.toLocaleString("en-US", {
-    timeZone: "Asia/Manila",
+    timeZone,
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
@@ -11,26 +15,29 @@ export function formatToUTC8(isoStr: string): string {
   });
 }
 
-export function toDisplayString(timestampUTC8: string): string {
-  const date = new Date(timestampUTC8);
+/** Display format for the final results JSON (Manila / UTC+8). */
+export function formatToUTC8(isoStr: string): string {
+  return formatInTimeZone(isoStr, "Asia/Manila");
+}
+
+/** UTC display — matches how the org table renders timestamps. */
+export function formatInUTC(isoStr: string): string {
+  return formatInTimeZone(isoStr, "UTC");
+}
+
+/**
+ * Produces the string the org table's timestamp cell renders for the given
+ * UTC instant. The table shows a relative string for recent sessions and an
+ * absolute UTC timestamp otherwise. Used to build DOM selectors.
+ */
+export function toDisplayString(isoUtc: string): string {
+  const date = new Date(isoUtc);
   const now = new Date();
   const diffHours = (now.getTime() - date.getTime()) / (1000 * 60 * 60);
 
-  if (diffHours < 24) {
-    const hours = Math.floor(diffHours);
-    return `${hours}h ago`;
-  } else if (diffHours < 48) {
-    return "1d ago";
-  } else {
-    const month = String(date.getMonth() + 1).padStart(2, "0");
-    const day = String(date.getDate()).padStart(2, "0");
-    const year = date.getFullYear();
-    let hours = date.getHours();
-    const ampm = hours >= 12 ? "PM" : "AM";
-    hours = hours % 12 || 12;
-    const minutes = String(date.getMinutes()).padStart(2, "0");
-    return `${month}-${day}-${year}, ${hours}:${minutes} ${ampm}`;
-  }
+  if (diffHours < 24) return `${Math.floor(diffHours)}h ago`;
+  if (diffHours < 48) return "1d ago";
+  return formatInUTC(isoUtc);
 }
 
 export function parseJsonDateUtc(dateUtc: string): string {
@@ -67,9 +74,8 @@ export function parseJsonDateUtc(dateUtc: string): string {
 }
 
 /**
- * Parses formatToUTC8's output, "MM/DD/YYYY, HH:MM AM/PM", back into a Date.
- * Uses UTC for construction so comparisons are timezone-independent and
- * consistent — we only need ordering, not an actual wall-clock instant.
+ * Parses the org table's "MM/DD/YYYY, HH:MM AM/PM" cell (rendered in UTC)
+ * into a Date representing the same instant.
  */
 export function parseDisplayDateToUTC(display: string): Date | null {
   const m = display
@@ -80,6 +86,5 @@ export function parseDisplayDateToUTC(display: string): Date | null {
   const [, mm, dd, yyyy, hh, min, ap] = m;
   let h = parseInt(hh, 10) % 12;
   if (ap.toUpperCase() === "PM") h += 12;
-
   return new Date(Date.UTC(+yyyy, +mm - 1, +dd, h, +min));
 }
