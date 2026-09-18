@@ -67,7 +67,7 @@ function writeResultsFile(jsonPath: string, data: Entity[]): void {
 // ---------- Main ----------
 
 (async (): Promise<void> => {
-  const browser = await chromium.launch({ headless: false });
+  const browser = await chromium.launch({ headless: true });
 
   const email = process.env.QC_EMAIL;
   const password = process.env.QC_PASSWORD;
@@ -81,6 +81,9 @@ function writeResultsFile(jsonPath: string, data: Entity[]): void {
 
   const context = await browser.newContext({
     httpCredentials: { username: email, password: password },
+    recordVideo: {
+      dir: path.join(process.cwd(), "data", "output", "qc", "videos"), // Where to save files
+    },
   });
 
   const page = await context.newPage();
