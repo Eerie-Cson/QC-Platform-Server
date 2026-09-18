@@ -2,6 +2,7 @@
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 const video = document.querySelector('video');
+if(video.paused) video.play();
 
 (async () => {
     if (!video) {
@@ -10,90 +11,163 @@ const video = document.querySelector('video');
     }
 
     // --- AUDIO CHECK & AUTO-MUTE ---
-    // Checks standard audio tracks or looks for standard video dimensions that imply it's a media file with audio
     const hasAudioTrack = video.audioTracks && video.audioTracks.length > 0;
     const hasAudioAttribute = video.hasAttribute('audio') || (video.webkitAudioDecodedByteCount > 0);
     
-    // If audio is present or if we want to be safe, mute the video
     if (hasAudioTrack || hasAudioAttribute || typeof video.muted !== 'undefined') {
         video.muted = true;
         console.log("🔇 Audio detected or supported. Video has been automatically MUTED.");
     }
-    // -------------------------------
 
-    console.log("⏳ Initialized. Waiting 10 seconds before starting loop...");
-    await delay(10000); // 10-second delay at the start
-
-    console.log("Loop active. 🛑 RIGHT-CLICK to DESTROY. ⏸️ MIDDLE-CLICK to PAUSE/RESUME.");
-    
+    // --- MODE & STATE CONFIGURATION ---
+    let activeMode = 'SKIP'; // Options: 'SPEED' (Fast-Forward) or 'SKIP' (Frame Skipping)
     let isWaitingForBuffer = false;
     let isPausedManually = false; 
+    
+    const FAST_FORWARD_SPEED = 4.0; // Playback rate for SPEED mode
+    const NORMAL_SPEED = 1.0;
+    
+    // --- THROTTLE CONFIGURATION ---
+    let lastSkipTime = 0;
+    const SKIP_DELAY_MS = 600; // 500 ms delay between frame skips
 
-    // 2. The Automation Loop
-    const arrowLoop = setInterval(() => {
+    // --- UI INDICATOR PILL ---
+    const badge = document.createElement('div');
+    Object.assign(badge.style, {
+        position: 'fixed',
+        top: '20px',
+        right: '20px',
+        padding: '10px 16px',
+        background: 'rgba(0, 0, 0, 0.85)',
+        color: '#fff',
+        fontFamily: 'sans-serif',
+        fontSize: '13px',
+        borderRadius: '8px',
+        zIndex: '999999',
+        boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
+        pointerEvents: 'none',
+        lineHeight: '1.5'
+    });
+    document.body.appendChild(badge);
+
+    const updateUI = (bufferSecs = 0) => {
+        let modeLabel = activeMode === 'SPEED' ? '⚡ Smooth Fast-Forward' : '⏩ Frame Skipping';
+        let statusLabel = isPausedManually ? '⏸️ Manually Paused' : (isWaitingForBuffer ? '⏳ Buffering...' : '▶️ Active');
+        badge.innerHTML = `
+            <div><strong>Mode:</strong> ${modeLabel} <span style="font-size:10px;color:#aaa;">(Press 'T' to Toggle)</span></div>
+            <div><strong>Status:</strong> ${statusLabel}</div>
+            <div><strong>Buffer:</strong> ${bufferSecs.toFixed(1)}s ahead</div>
+        `;
+    };
+    updateUI();
+
+    console.log("⏳ Initialized. Waiting 10 seconds before starting loop...");
+    await delay(10000); 
+
+    console.log("Loop active. 🛑 RIGHT-CLICK to DESTROY. ⏸️ MIDDLE-CLICK to PAUSE/RESUME.");
+    console.log("⌨️ Press 'T' on your keyboard to switch between SPEED and SKIP modes.");
+
+    // 2. The Automation Loop (Runs frequently to handle live state updates and mode switching gracefully)
+    const automationLoop = setInterval(() => {
         if (video.ended) {
             cleanup();
             console.log("Video finished! Loop cleared.");
             return;
         }
 
+        let bufferAhead = 0;
         if (video.buffered.length > 0) {
             const currentBufferEnd = video.buffered.end(video.buffered.length - 1);
-            const bufferAhead = currentBufferEnd - video.currentTime;
+            bufferAhead = currentBufferEnd - video.currentTime;
 
             if (isWaitingForBuffer) {
-                // DYNAMIC RESUME: Resume if the gray bar has built up to 35+ seconds ahead
                 if (bufferAhead >= 35) {
                     isWaitingForBuffer = false;
-                    console.log(`▶️ Gray bar is now ${bufferAhead.toFixed(1)}s ahead. Resuming automation.`);
+                    console.log(`▶️ Buffer healthy (${bufferAhead.toFixed(1)}s). Resuming automation.`);
                 }
             } else {
-                // TRIGGER PAUSE: Pause if the white bar gets within 25 seconds of the gray bar's end
                 if (bufferAhead < 25) {
                     isWaitingForBuffer = true;
-                    console.log(`⏳ Buffer low (${bufferAhead.toFixed(1)}s ahead). Waiting for gray bar to load...`);
+                    console.log(`⏳ Buffer low (${bufferAhead.toFixed(1)}s). Throttling automation...`);
                 }
             }
         }
 
-        // FIRE KEY EVENT: Only runs if conditions are optimal
-        if (!video.paused && !video.seeking && !isWaitingForBuffer && !isPausedManually) {
-            video.focus();
-            const rightArrowEvent = new KeyboardEvent('keydown', { 
-                key: 'ArrowRight', 
-                code: 'ArrowRight', 
-                keyCode: 39, 
-                bubbles: true, 
-                cancelable: true 
-            });
-            video.dispatchEvent(rightArrowEvent);
-        }
-    }, 600);
+        updateUI(bufferAhead);
 
-    // 3. Mouse Trigger Event Handler
+        // Core processing condition
+        const canExecute = !video.paused && !video.seeking && !isWaitingForBuffer && !isPausedManually;
+
+        if (activeMode === 'SPEED') {
+            // MODE A: Smooth Fast Forward
+            if (canExecute) {
+                if (video.playbackRate !== FAST_FORWARD_SPEED) video.playbackRate = FAST_FORWARD_SPEED;
+            } else {
+                if (video.playbackRate !== NORMAL_SPEED) video.playbackRate = NORMAL_SPEED;
+            }
+        } else {
+            // MODE B: Frame Skipping
+            if (video.playbackRate !== NORMAL_SPEED) video.playbackRate = NORMAL_SPEED; // Force normal rate during skipping
+            
+            if (canExecute) {
+                const now = Date.now();
+                // Check if 500ms has elapsed since the last dispatched key event
+                if (now - lastSkipTime >= SKIP_DELAY_MS) {
+                    video.focus();
+                    const rightArrowEvent = new KeyboardEvent('keydown', { 
+                        key: 'ArrowRight', 
+                        code: 'ArrowRight', 
+                        keyCode: 39, 
+                        bubbles: true, 
+                        cancelable: true 
+                    });
+                    video.dispatchEvent(rightArrowEvent);
+                    lastSkipTime = now; // Reset timestamp anchor
+                }
+            }
+        }
+    }, 100); // Ticks every 100ms for tight responsiveness, while logic limits the skip execution rate
+
+    // 3. Mouse Trigger Event Handler (Pause, Resume, Destroy)
     const handleMouseClicks = (event) => {
-        // MIDDLE CLICK (button 1) or SIDE BUTTONS (button 3, button 4)
         if (event.button === 1 || event.button === 3 || event.button === 4) {
-            event.preventDefault(); // Stop default middle-click scroll behavior
+            event.preventDefault(); 
             isPausedManually = !isPausedManually;
+            updateUI();
             console.log(isPausedManually ? "⏸️ Automation manually PAUSED." : "▶️ Automation manually RESUMED.");
         }
         
-        // RIGHT CLICK (button 2)
         if (event.button === 2) {
-            event.preventDefault(); // Stop context menu from showing up
+            event.preventDefault(); 
             cleanup();
-            console.log("🛑 Automation DESTROYED and event listeners removed.");
+            console.log("🛑 Automation DESTROYED.");
         }
     };
 
-    // 4. Cleanup Function to wipe everything out safely
-    const cleanup = () => {
-        clearInterval(arrowLoop);
-        window.removeEventListener('mousedown', handleMouseClicks);
+    // 4. Keyboard Mode Toggle Listener
+    const handleKeyPress = (event) => {
+        if (event.key === 't' || event.key === 'T') {
+            activeMode = activeMode === 'SPEED' ? 'SKIP' : 'SPEED';
+            // Instantly reset playback rate back to normal if moving to skip mode
+            if (activeMode === 'SKIP' && video.playbackRate !== NORMAL_SPEED) {
+                video.playbackRate = NORMAL_SPEED;
+            }
+            updateUI();
+            console.log(`🔄 Mode switched! Now using: ${activeMode === 'SPEED' ? 'Fast-Forward (Speed)' : 'Frame Skipping (Skip)'}`);
+        }
     };
 
-    // 5. Attach the mouse listener to the global window
+    // 5. Cleanup Function
+    const cleanup = () => {
+        clearInterval(automationLoop);
+        window.removeEventListener('mousedown', handleMouseClicks);
+        window.removeEventListener('keydown', handleKeyPress);
+        if (badge) badge.remove();
+        if (video) video.playbackRate = NORMAL_SPEED; 
+    };
+
+    // Attach Listeners
     window.addEventListener('mousedown', handleMouseClicks);
+    window.addEventListener('keydown', handleKeyPress);
 
 })();

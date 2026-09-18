@@ -9,6 +9,18 @@ const video = document.querySelector('video');
         return;
     }
 
+    // --- AUDIO CHECK & AUTO-MUTE ---
+    // Checks standard audio tracks or looks for standard video dimensions that imply it's a media file with audio
+    const hasAudioTrack = video.audioTracks && video.audioTracks.length > 0;
+    const hasAudioAttribute = video.hasAttribute('audio') || (video.webkitAudioDecodedByteCount > 0);
+    
+    // If audio is present or if we want to be safe, mute the video
+    if (hasAudioTrack || hasAudioAttribute || typeof video.muted !== 'undefined') {
+        video.muted = true;
+        console.log("🔇 Audio detected or supported. Video has been automatically MUTED.");
+    }
+    // -------------------------------
+
     console.log("⏳ Initialized. Waiting 10 seconds before starting loop...");
     await delay(10000); // 10-second delay at the start
 
