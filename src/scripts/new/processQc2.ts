@@ -9,6 +9,7 @@ import {
   extractSessionId,
   getSessionData,
   getAllSessionRows,
+  resolveSessionColumnIndexes,
 } from "../../utilities/minuteApp";
 import {
   formatToUTC8,
@@ -155,15 +156,24 @@ async function loadInputData(
  * Scrolls the "Show more" button until the oldest visible row is older than
  * `cutoff`. The cutoff is a UTC instant; the table renders its cells in UTC,
  * so `parseDisplayDateToUTC(cell)` yields a directly-comparable Date.
+ *
+ * `recordedColumnIndex` is the 0-based index of the "Recorded timestamp (UTC)"
+ * column, resolved from the live <thead> via `resolveSessionColumnIndexes`.
  */
 async function clickShowMoreUntilStable(
   page: Page,
+  recordedColumnIndex: number,
   cutoff: Date | null = null,
   selector = 'button:has-text("Show more")',
 ): Promise<void> {
+  // CSS nth-child is 1-based; our column index is 0-based.
+  const recordedCellSelector = `td:nth-child(${recordedColumnIndex + 1})`;
+
   console.log(
-    `Scrolling until ${cutoff?.toISOString() ?? "(no cutoff)"} is reached`,
+    `Scrolling until ${cutoff?.toISOString() ?? "(no cutoff)"} is reached ` +
+      `(recorded column: ${recordedColumnIndex})`,
   );
+
   let previousRowCount = 0;
   const showMoreButton = page.locator(selector);
 
@@ -182,7 +192,8 @@ async function clickShowMoreUntilStable(
     if (cutoff) {
       const lastRow = page.locator("table tbody tr:last-child");
       const recordedText =
-        (await lastRow.locator("td:nth-child(14)").textContent())?.trim() || "";
+        (await lastRow.locator(recordedCellSelector).textContent())?.trim() ||
+        "";
       const lastDate = parseDisplayDateToUTC(recordedText);
 
       if (!lastDate) {
@@ -250,7 +261,10 @@ function earliestRecordedInstant(inputData: any[]): Date | null {
   await page.click("#org-overview-tab-sessions");
   await page.waitForSelector("table tbody tr", { state: "visible" });
 
-  await clickShowMoreUntilStable(page, cutoff);
+  // Resolve column indexes once, up front, and share them with both helpers.
+  const columnIndex = await resolveSessionColumnIndexes(page);
+
+  await clickShowMoreUntilStable(page, columnIndex.recorded, cutoff);
 
   const allRows: SessionRow[] = await getAllSessionRows(page);
 

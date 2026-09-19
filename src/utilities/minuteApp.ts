@@ -2,6 +2,47 @@ import { Page } from "playwright";
 import { formatToUTC8, toDisplayString } from "./timeUtil";
 import { Entry, SessionRow } from "../types";
 
+// Maps SessionRow fields -> exact header text rendered by the Minute app.
+// If the app ever renames or reorders columns, only this map needs updating.
+const SESSION_HEADER_MAP = {
+  email: "Email",
+  sessionId: "Session ID",
+  task: "Task name",
+  minutes: "Minutes collected",
+  recorded: "Recorded timestamp (UTC)",
+  uploaded: "Uploaded timestamp (UTC)",
+} as const;
+
+type SessionField = keyof typeof SESSION_HEADER_MAP;
+export type SessionColumnIndex = Record<SessionField, number>;
+
+/**
+ * Reads the live <thead> row and resolves each logical field to its column
+ * index. Throws if a required header is missing, so UI changes fail loudly.
+ */
+export async function resolveSessionColumnIndexes(
+  page: Page,
+): Promise<SessionColumnIndex> {
+  const headers = (await page.locator("table thead th").allTextContents()).map(
+    (h) => h.trim(),
+  );
+
+  const columnIndex = {} as SessionColumnIndex;
+  for (const field of Object.keys(SESSION_HEADER_MAP) as SessionField[]) {
+    const headerName = SESSION_HEADER_MAP[field];
+    const idx = headers.indexOf(headerName);
+    if (idx === -1) {
+      throw new Error(
+        `Expected column "${headerName}" not found. ` +
+          `Available headers: ${headers.map((h) => `"${h}"`).join(", ")}`,
+      );
+    }
+    columnIndex[field] = idx;
+  }
+
+  return columnIndex;
+}
+
 export async function loginToMinuteApp(
   page: Page,
   email: string,
@@ -148,31 +189,32 @@ export async function findSessionLinkForEntry(
 }
 
 export async function getAllSessionRows(page: Page): Promise<SessionRow[]> {
+  const columnIndex = await resolveSessionColumnIndexes(page);
+  const maxRequiredIndex = Math.max(...Object.values(columnIndex));
+
   const rows = await page.$$("tr.cursor-pointer");
   const sessionData: SessionRow[] = [];
 
   for (const row of rows) {
     const cells = await row.$$("td");
-    if (cells.length < 12) continue;
+    // Skip rows that don't have all the columns we need (e.g. header/footer).
+    if (cells.length <= maxRequiredIndex) continue;
 
-    const email = (await cells[1].textContent())?.trim() || "";
-    const task = (await cells[5].textContent())?.trim() || "";
-    const minutesText = (await cells[8].textContent())?.trim() || "0";
-    const minutes = parseFloat(minutesText);
-    const sessionId = (await cells[2].textContent())?.trim() || "";
-    const recorded = (await cells[13].textContent())?.trim() || "";
-    const uploaded = (await cells[14].textContent())?.trim() || "";
+    const cellText = async (i: number) =>
+      (await cells[i].textContent())?.trim() || "";
+
+    const minutes = parseFloat(await cellText(columnIndex.minutes));
 
     const linkElement = await row.$('a[href*="/session/"]');
     const link = linkElement ? await linkElement.getAttribute("href") : null;
 
     sessionData.push({
-      email,
-      sessionId,
-      task,
-      minutes,
-      recorded,
-      uploaded,
+      email: await cellText(columnIndex.email),
+      sessionId: await cellText(columnIndex.sessionId),
+      task: await cellText(columnIndex.task),
+      minutes: Number.isNaN(minutes) ? 0 : minutes,
+      recorded: await cellText(columnIndex.recorded),
+      uploaded: await cellText(columnIndex.uploaded),
       link,
     });
   }
