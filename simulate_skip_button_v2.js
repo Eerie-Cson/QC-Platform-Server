@@ -76,8 +76,8 @@ if (window.__VIDEO_AUTOMATOR_RUNNING__) {
           : "▶️ Active";
       badge.innerHTML = `
                 <div><strong>Mode:</strong> ${modeLabel} <span style="font-size:10px;color:#aaa;">('T' to Toggle)</span></div>
-                <div><strong>Status:</strong> ${statusLabel} <span style="font-size:10px;color:#aaa;">('P' to Pause)</span></div>
-                <div><strong>Buffer:</strong> ${bufferSecs.toFixed(1)}s ahead <span style="font-size:10px;color:#aaa;">('D' to Destroy)</span></div>
+                <div><strong>Status:</strong> ${statusLabel}
+                <div><strong>Buffer:</strong> ${bufferSecs.toFixed(1)}s ahead</div>
             `;
     };
     updateUI();

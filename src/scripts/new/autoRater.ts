@@ -82,7 +82,7 @@ function writeResultsFile(jsonPath: string, data: Entity[]): void {
   const context = await browser.newContext({
     httpCredentials: { username: email, password: password },
     recordVideo: {
-      dir: path.join(process.cwd(), "data", "output", "qc", "videos"), // Where to save files
+      dir: path.join(process.cwd(), "data", "output", "qc", "videos"),
     },
   });
 
@@ -103,6 +103,7 @@ function writeResultsFile(jsonPath: string, data: Entity[]): void {
 
   let submitted = 0;
   let skipped = 0;
+  let skippedRated = 0;
   let failed = 0;
   let alreadyDone = 0;
   let skippedProcessing = 0;
@@ -155,7 +156,7 @@ function writeResultsFile(jsonPath: string, data: Entity[]): void {
 
       if ((await row.count()) === 0) {
         console.log("  ⚠ Not found in My Queue — skipping.");
-        skipped++;
+        skippedRated++;
         continue;
       }
 
@@ -264,6 +265,7 @@ function writeResultsFile(jsonPath: string, data: Entity[]): void {
       `  Already done:       ${alreadyDone}\n` +
       `  Skipped:            ${skipped}\n` +
       `  Skipped (processing): ${skippedProcessing}\n` +
+      `  Not Found (rated):  ${skippedRated}\n` +
       `  Failed:             ${failed}\n` +
       `  Total:              ${data.length}`,
   );
