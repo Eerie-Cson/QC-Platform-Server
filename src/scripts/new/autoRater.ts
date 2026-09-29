@@ -67,7 +67,7 @@ function writeResultsFile(jsonPath: string, data: Entity[]): void {
 // ---------- Main ----------
 
 (async (): Promise<void> => {
-  const browser = await chromium.launch({ headless: true });
+  const browser = await chromium.launch({ headless: false });
 
   const email = process.env.QC_EMAIL;
   const password = process.env.QC_PASSWORD;
@@ -100,6 +100,7 @@ function writeResultsFile(jsonPath: string, data: Entity[]): void {
   );
   const rawData = fs.readFileSync(jsonPath, "utf8");
   const data: Entity[] = JSON.parse(rawData) as Entity[];
+  const notFoundFootages: string[] = [];
 
   let submitted = 0;
   let skipped = 0;
@@ -107,6 +108,7 @@ function writeResultsFile(jsonPath: string, data: Entity[]): void {
   let failed = 0;
   let alreadyDone = 0;
   let skippedProcessing = 0;
+  let skippedNewAccount = 0;
 
   for (const [index, entity] of data.entries()) {
     const targetSessionId: string = entity.sessionId;
@@ -118,6 +120,13 @@ function writeResultsFile(jsonPath: string, data: Entity[]): void {
     if (entity.submitted === true) {
       console.log("  ⏭ Skipping: already marked as submitted.");
       alreadyDone++;
+      continue;
+    }
+
+    if (entity.new === true) {
+      console.log("  ⏭ Skipping: flagged as a new account.");
+      skipped++;
+      skippedNewAccount++;
       continue;
     }
 
@@ -138,6 +147,14 @@ function writeResultsFile(jsonPath: string, data: Entity[]): void {
     >;
     const hasAnyRating = ratingKeys.some((k) => !isEmpty(ratings[k]));
 
+    const allRatingsFilled = ratingKeys.every((k) => !isEmpty(ratings[k]));
+
+    if (!allRatingsFilled) {
+      console.log("  ⏭ Skipping: one or more fields is/are not rated.");
+      skipped++;
+      continue;
+    }
+
     if (!hasAnyRating) {
       console.log("  ⏭ Skipping: all rating fields are empty.");
       skipped++;
@@ -145,9 +162,10 @@ function writeResultsFile(jsonPath: string, data: Entity[]): void {
     }
 
     try {
-      const myQueueTable = page.locator("table").filter({
-        has: page.locator("thead th", { hasText: "Duration" }),
-      });
+      const myQueueTable = page
+        .locator(".card")
+        .filter({ has: page.getByRole("heading", { name: /My Queue/ }) })
+        .locator("table");
       await myQueueTable.waitFor({ timeout: 15_000 });
 
       const row = myQueueTable
@@ -157,6 +175,7 @@ function writeResultsFile(jsonPath: string, data: Entity[]): void {
       if ((await row.count()) === 0) {
         console.log("  ⚠ Not found in My Queue — skipping.");
         skippedRated++;
+        notFoundFootages.push(targetSessionId);
         continue;
       }
 
@@ -265,10 +284,13 @@ function writeResultsFile(jsonPath: string, data: Entity[]): void {
       `  Already done:       ${alreadyDone}\n` +
       `  Skipped:            ${skipped}\n` +
       `  Skipped (processing): ${skippedProcessing}\n` +
+      `  Skipped (new acct): ${skippedNewAccount}\n` +
       `  Not Found (rated):  ${skippedRated}\n` +
       `  Failed:             ${failed}\n` +
       `  Total:              ${data.length}`,
   );
+
+  console.log("not found: ", notFoundFootages);
 
   await page.pause();
   await browser.close();

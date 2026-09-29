@@ -1,63 +1,110 @@
 import "dotenv/config";
-import { chromium } from "playwright";
+import { chromium, Page } from "playwright";
 import fs from "fs";
 import path from "path";
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+type ScrapedRow = {
+  sessionId: string;
+  sessionUrl: string;
+  email: string;
+  taskType: string;
+  duration: string;
+  dateUtc: string;
+  rateUrl: string;
+  new?: boolean;
+};
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
 /**
- * Parse a date string into a Date object.
- * Handles ISO strings, "MM/DD/YYYY, HH:MM AM", "Sep 1, 2026, 09:05 PM UTC",
- * and bare dates like "Sep 09, 2026" or "2026-09-09".
+ * Scrape a card (identified by its <h2> text) into ScrapedRow[].
+ * Works for both "My Queue" and "Available Sessions".
  *
- * Bare dates are interpreted as UTC midnight so timezone differences don't
- * shift the filter window.
+ * - sessionId is read from <code>, not textContent, to avoid picking up the
+ *   "New account" badge that sits next to it.
+ * - rateUrl only exists in My Queue rows (Available Sessions rows have a
+ *   Claim button instead), so it will be "" for Available rows.
  */
-function parseDate(input: string): Date | null {
-  if (!input) return null;
-  const trimmed = input.trim();
+async function scrapeCard(page: Page, heading: string): Promise<ScrapedRow[]> {
+  return page.evaluate((headingText) => {
+    const cards = Array.from(document.querySelectorAll(".card"));
+    const card = cards.find((c) =>
+      c.querySelector("h2")?.textContent?.includes(headingText),
+    );
+    if (!card) return [];
 
-  // If it's a bare date (no time component), treat it as UTC midnight.
-  const isBareDate =
-    /^\d{4}-\d{2}-\d{2}$/.test(trimmed) ||
-    /^[A-Za-z]{3,9}\s+\d{1,2},?\s+\d{4}$/.test(trimmed) ||
-    /^\d{1,2}\/\d{1,2}\/\d{4}$/.test(trimmed);
+    const table = card.querySelector("table");
+    if (!table) return [];
 
-  if (isBareDate) {
-    const tmp = new Date(trimmed);
-    if (!isNaN(tmp.getTime())) {
-      return new Date(
-        Date.UTC(tmp.getFullYear(), tmp.getMonth(), tmp.getDate()),
-      );
-    }
-  }
+    const rows = Array.from(table.querySelectorAll("tr"));
 
-  // Full timestamps (e.g. "Sep 8, 2026, 4:04 PM UTC") — native parse
-  const native = new Date(trimmed);
-  if (!isNaN(native.getTime())) return native;
+    return rows
+      .map((row) => {
+        const cells = row.querySelectorAll("td");
+        if (cells.length < 6) return null;
 
-  // Fallback: strip commas
-  const fallback = new Date(trimmed.replace(/,/g, ""));
-  if (!isNaN(fallback.getTime())) return fallback;
+        const sessionAnchor = cells[0].querySelector("a");
+        const code = cells[0].querySelector("code");
+        const rateAnchor = cells[5].querySelector("a");
 
-  return null;
+        // New-account badge lives in the first cell:
+        //   <span class="badge flag" style="margin-left:6px">New account</span>
+        const badge = cells[0].querySelector("span.badge");
+        const isNew = badge?.textContent?.trim() === "New account";
+
+        return {
+          sessionId: code?.textContent?.trim() ?? "",
+          sessionUrl: sessionAnchor?.getAttribute("href") ?? "",
+          email: cells[1].textContent?.trim() ?? "",
+          taskType: cells[2].textContent?.trim() ?? "",
+          duration: cells[3].textContent?.trim() ?? "",
+          dateUtc: cells[4].textContent?.trim() ?? "",
+          rateUrl: rateAnchor?.getAttribute("href") ?? "",
+          // Only include the flag when it's actually a new account.
+          ...(isNew ? { new: true } : {}),
+        };
+      })
+      .filter((d): d is ScrapedRow => d !== null && d.sessionId !== "");
+  }, heading);
 }
 
 /**
- * Returns true if `dateStr` falls within [from, to].
- * Null bounds mean "no restriction" on that side.
+ * Click "Claim →" on the Available Sessions row for `sessionId` and wait
+ * until the button detaches (i.e. Next.js server action re-rendered the
+ * table and the row is gone).
+ *
+ * After the detach, we sleep for a small jittered interval before returning.
+ * The detach wait is already the true synchronization point, but the extra
+ * pause keeps the request pattern closer to human pacing and reduces the
+ * chance of tripping a per-user rate limiter on the server action.
  */
-function isWithinRange(
-  dateStr: string,
-  from: Date | null,
-  to: Date | null,
-): boolean {
-  const d = parseDate(dateStr);
-  if (!d) return false; // unparseable → exclude
-  if (from && d < from) return false;
-  if (to && d > to) return false;
+async function claimSession(page: Page, sessionId: string): Promise<boolean> {
+  const availableCard = page.locator(".card").filter({
+    has: page.locator("h2", { hasText: "Available Sessions" }),
+  });
+
+  const row = availableCard.locator("tr").filter({ hasText: sessionId });
+  if ((await row.count()) === 0) {
+    console.warn(`    ⚠ ${sessionId} not found in Available Sessions.`);
+    return false;
+  }
+
+  const btn = row.getByRole("button", { name: /Claim/i });
+  await btn.click();
+
+  // Server action → row should disappear once React re-renders.
+  await btn.waitFor({ state: "detached", timeout: 20_000 });
+
+  // Let the DOM settle before the next claim, with a bit of human-ish jitter.
+  // Range: 800–2300 ms.
+  const jitter = 800 + Math.random() * 1_500;
+  await page.waitForTimeout(jitter);
   return true;
 }
 
@@ -77,84 +124,103 @@ function isWithinRange(
     );
   }
 
-  // ---- Date range from env (optional) ----
-  const fromEnv = process.env.QC_DATE_FROM?.trim();
-  const toEnv = process.env.QC_DATE_TO?.trim();
-  const dateFrom = fromEnv ? parseDate(fromEnv) : null;
-  const dateToRaw = toEnv ? parseDate(toEnv) : null;
+  // ---- Target queue size (required for auto-claim) ----
+  const targetRaw = process.env.QC_TARGET_QUEUE_SIZE?.trim();
+  const targetQueueSize = targetRaw ? Number.parseInt(targetRaw, 10) : NaN;
+  const autoClaim = process.env.QC_AUTO_CLAIM === "true";
 
-  // Make TO inclusive of the whole day
-  const dateTo = dateToRaw
-    ? new Date(dateToRaw.getTime() + 24 * 60 * 60 * 1000 - 1)
-    : null;
-
-  if (fromEnv && !dateFrom) {
-    console.warn(`⚠️ Could not parse QC_DATE_FROM="${fromEnv}" – ignoring.`);
-  }
-  if (toEnv && !dateToRaw) {
-    console.warn(`⚠️ Could not parse QC_DATE_TO="${toEnv}" – ignoring.`);
-  }
-  if (dateFrom || dateTo) {
+  if (autoClaim) {
+    if (!Number.isFinite(targetQueueSize) || targetQueueSize <= 0) {
+      throw new Error(
+        'QC_AUTO_CLAIM=true requires QC_TARGET_QUEUE_SIZE to be a positive integer (e.g. "90").',
+      );
+    }
     console.log(
-      `📅 Filtering by date range: ${dateFrom?.toISOString() ?? "any"} → ${dateTo?.toISOString() ?? "any"}`,
+      `🤖 Auto-claim enabled — target queue size: ${targetQueueSize}`,
+    );
+  } else {
+    console.log(
+      "ℹ️ Read-only mode (set QC_AUTO_CLAIM=true to enable claiming).",
     );
   }
 
-  // 1. Handle browser HTTP basic authentication context
   const context = await browser.newContext({
     httpCredentials: { username: email, password: password },
   });
 
   const page = await context.newPage();
   await page.goto(link);
-
-  // 2. Wait for the table data rows to load
   await page.waitForSelector("table tr");
 
-  // 3. Scrape the row data
-  const scrapedRows = await page.evaluate(() => {
-    const tables = Array.from(document.querySelectorAll("table"));
+  // -------------------------------------------------------------------------
+  // 1. Scrape My Queue
+  // -------------------------------------------------------------------------
+  let myQueue = await scrapeCard(page, "My Queue");
+  console.log(`📋 My Queue: ${myQueue.length} rows`);
 
-    const targetTable = tables.find((table) => {
-      const headers = Array.from(table.querySelectorAll("thead th"));
-      return headers.some((th) => th.textContent?.trim() === "Duration");
-    });
+  // -------------------------------------------------------------------------
+  // 2. Top up from Available Sessions if below target
+  // -------------------------------------------------------------------------
+  if (autoClaim && myQueue.length < targetQueueSize) {
+    const needed = targetQueueSize - myQueue.length;
+    console.log(
+      `📥 My Queue has ${myQueue.length}/${targetQueueSize}. ` +
+        `Claiming ${needed} from Available Sessions...`,
+    );
 
-    if (!targetTable) return [];
+    const available = await scrapeCard(page, "Available Sessions");
+    console.log(`   Available: ${available.length} rows visible.`);
 
-    const rows = Array.from(targetTable.querySelectorAll("tr"));
+    // Don't re-claim anything already in our queue.
+    const alreadyInQueue = new Set(myQueue.map((r) => r.sessionId));
+    const candidates = available
+      .filter((r) => !alreadyInQueue.has(r.sessionId))
+      .slice(0, needed);
 
-    return rows
-      .map((row) => {
-        const cells = row.querySelectorAll("td");
-        if (cells.length < 6) return null;
+    if (candidates.length === 0) {
+      console.log("   ⚠ No matching sessions available to claim.");
+    } else if (candidates.length < needed) {
+      console.log(
+        `   ⚠ Only ${candidates.length} candidates visible ` +
+          `(needed ${needed}). Consider applying a filter on the page ` +
+          `if the backlog is capped at 200.`,
+      );
+    }
 
-        const sessionAnchor = cells[0].querySelector("a");
-        const rateAnchor = cells[5].querySelector("a");
+    let claimed = 0;
+    for (const candidate of candidates) {
+      console.log(
+        `   → Claiming ${candidate.sessionId} (${candidate.taskType})`,
+      );
+      try {
+        const ok = await claimSession(page, candidate.sessionId);
+        if (ok) {
+          claimed++;
+          console.log(`     ✓ Claimed.`);
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(`     ✗ Failed to claim ${candidate.sessionId}: ${msg}`);
+      }
+    }
 
-        return {
-          sessionId: cells[0].textContent?.trim() || "",
-          sessionUrl: sessionAnchor ? sessionAnchor.getAttribute("href") : "",
-          email: cells[1].textContent?.trim() || "",
-          taskType: cells[2].textContent?.trim() || "",
-          duration: cells[3].textContent?.trim() || "",
-          dateUtc: cells[4].textContent?.trim() || "",
-          rateUrl: rateAnchor ? rateAnchor.getAttribute("href") : "",
-        };
-      })
-      .filter((data) => data !== null);
-  });
+    console.log(`📥 Claimed ${claimed}/${candidates.length}.`);
 
-  // 4. Apply date range filter
-  const filteredRows = scrapedRows.filter((row) =>
-    isWithinRange(row!.dateUtc, dateFrom, dateTo),
-  );
+    // -----------------------------------------------------------------------
+    // 3. Re-scrape My Queue so the JSON reflects the post-claim state
+    // -----------------------------------------------------------------------
+    myQueue = await scrapeCard(page, "My Queue");
+    console.log(`📋 My Queue (after claim): ${myQueue.length} rows`);
+  } else if (autoClaim) {
+    console.log(
+      `✅ My Queue already has ${myQueue.length} ≥ target ${targetQueueSize} — ` +
+        `no claiming needed.`,
+    );
+  }
 
-  console.log(
-    `🔎 Scraped ${scrapedRows.length} rows → ${filteredRows.length} after date filter`,
-  );
-
-  // 5. Write output — always overwrite so the file reflects the current filter
+  // -------------------------------------------------------------------------
+  // 4. Write output
+  // -------------------------------------------------------------------------
   const outputDir = path.join(process.cwd(), "platform-data");
   const outputPath = path.join(outputDir, "QC - input.json");
 
@@ -162,12 +228,12 @@ function isWithinRange(
     fs.mkdirSync(outputDir, { recursive: true });
   }
 
-  fs.writeFileSync(outputPath, JSON.stringify(filteredRows, null, 2), "utf8");
+  fs.writeFileSync(outputPath, JSON.stringify(myQueue, null, 2), "utf8");
 
-  if (filteredRows.length === 0) {
-    console.log("⚠️ No rows matched the current date filter. File cleared.");
+  if (myQueue.length === 0) {
+    console.log("⚠️ My Queue is empty. File cleared.");
   } else {
-    console.log(`✅ Saved ${filteredRows.length} items to: ${outputPath}`);
+    console.log(`✅ Saved ${myQueue.length} items to: ${outputPath}`);
   }
 
   await browser.close();

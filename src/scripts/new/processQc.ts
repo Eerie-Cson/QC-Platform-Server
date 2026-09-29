@@ -23,7 +23,7 @@ import {
   LINKS_CSV,
   QC_INPUT_JSON_DIR,
 } from "../../config/paths";
-import { Session, SessionRow } from "../../types";
+import { SessionWithDuplicate, Session, SessionRow } from "../../types";
 
 type InputType = "json" | "csv";
 
@@ -70,6 +70,7 @@ interface JsonInputEntry {
   duration: string;
   dateUtc: string;
   rateUrl?: string;
+  new?: boolean;
 }
 
 function normalizeMinutes(duration: string | number): string {
@@ -94,6 +95,7 @@ function loadJsonInput(jsonFile: string): any[] {
     sessionId: entry.sessionId,
     link: entry.sessionUrl,
     systemRating: "",
+    ...(entry.new ? { new: true } : {}),
   }));
 }
 
@@ -153,6 +155,95 @@ async function loadInputData(
 }
 
 /**
+ * Resolves duplicate sessionIds in the QC input.
+ *
+ * The same underlying session can appear more than once in the input with
+ * slightly different `taskType` labels (e.g. "AV & Cable Management" vs
+ * "AV or Cable Management"). The Minute app is authoritative for the task
+ * name, so we keep only the entry whose `task` (mapped from the input's
+ * `taskType`) matches the app's `task` for that sessionId.
+ *
+ * Entries without a sessionId, or sessions that cannot be found in `allRows`,
+ * are kept in their original order (first occurrence wins for safety).
+ */
+function resolveDuplicateTasks(inputData: any[], allRows: SessionRow[]): any[] {
+  // Fast path: nothing to dedup if every sessionId is unique. Return the
+  // original array untouched so the common case costs one Set build.
+  const seen = new Set<string>();
+  let hasDuplicates = false;
+  for (const entry of inputData) {
+    const key = entry.sessionId;
+    if (!key) continue;
+    if (seen.has(key)) {
+      hasDuplicates = true;
+      break;
+    }
+    seen.add(key);
+  }
+  if (!hasDuplicates) return inputData;
+
+  const taskBySessionId = new Map<string, string>();
+  for (const row of allRows) {
+    if (row.sessionId) taskBySessionId.set(row.sessionId, row.task);
+  }
+
+  // Preserve original input order while grouping by sessionId.
+  const order: string[] = [];
+  const groups = new Map<string, any[]>();
+  for (const entry of inputData) {
+    const key = entry.sessionId || `__noId_${order.length}`;
+    if (!groups.has(key)) {
+      groups.set(key, []);
+      order.push(key);
+    }
+    groups.get(key)!.push(entry);
+  }
+
+  const resolved: any[] = [];
+  let droppedCount = 0;
+
+  for (const key of order) {
+    const group = groups.get(key)!;
+
+    if (group.length === 1) {
+      resolved.push(group[0]);
+      continue;
+    }
+
+    const appTask = taskBySessionId.get(key);
+    const match = appTask
+      ? group.find((e) => String(e.task).trim() === String(appTask).trim())
+      : undefined;
+
+    if (match) {
+      droppedCount += group.length - 1;
+      console.log(
+        `↺ Dedup sessionId ${key}: kept taskType "${match.task}" ` +
+          `(app task "${appTask}"); dropped ${group.length - 1} duplicate(s).`,
+      );
+      resolved.push({ ...match, duplicate: true });
+    } else {
+      droppedCount += group.length - 1;
+      console.warn(
+        `⚠️ Duplicate sessionId ${key}: no taskType matches app task ` +
+          `"${appTask ?? "unknown"}". Keeping first entry ("${group[0].task}").`,
+      );
+      resolved.push({ ...group[0], duplicate: true });
+    }
+  }
+
+  if (droppedCount > 0) {
+    console.log(
+      `↺ Deduplication removed ${droppedCount} duplicate input entr${
+        droppedCount === 1 ? "y" : "ies"
+      }.`,
+    );
+  }
+
+  return resolved;
+}
+
+/**
  * Scrolls the "Show more" button until the oldest visible row is older than
  * `cutoff`. The cutoff is a UTC instant; the table renders its cells in UTC,
  * so `parseDisplayDateToUTC(cell)` yields a directly-comparable Date.
@@ -174,20 +265,55 @@ async function clickShowMoreUntilStable(
       `(recorded column: ${recordedColumnIndex})`,
   );
 
-  let previousRowCount = 0;
   const showMoreButton = page.locator(selector);
 
-  while (true) {
-    const currentRowCount = await page.locator("table tbody tr").count();
-    if (currentRowCount === previousRowCount) break;
+  // The button is mounted lazily on some UIs — waiting for it to be
+  // *attached* before we start looping avoids the race where isVisible()
+  // returns false because the button simply hasn't rendered yet.
+  try {
+    await showMoreButton.waitFor({ state: "attached", timeout: 15_000 });
+  } catch {
+    console.log(
+      "ℹ️ Show more button never appeared — table likely fully loaded.",
+    );
+    console.log("Extracting data...");
+    return;
+  }
 
-    await showMoreButton.scrollIntoViewIfNeeded();
-    if (await showMoreButton.isVisible()) {
-      await showMoreButton.click();
-      await page.waitForTimeout(800);
-    } else {
+  // Snapshot the current row count *before* the loop so the first
+  // `waitForFunction` compares against a real baseline.
+  let previousRowCount = await page.locator("table tbody tr").count();
+  console.log(`Starting row count: ${previousRowCount}`);
+
+  while (true) {
+    // scrollIntoViewIfNeeded also covers the case where the button is
+    // below the fold and the page uses IntersectionObserver to reveal it.
+    await showMoreButton.scrollIntoViewIfNeeded().catch(() => {});
+
+    if (!(await showMoreButton.isVisible().catch(() => false))) {
+      console.log("ℹ️ Show more not visible — reached end of table.");
       break;
     }
+
+    await showMoreButton.click();
+
+    // Wait until new rows actually appear. This is what prevents the loop
+    // from racing the render and exiting before the server has responded.
+    try {
+      await page.waitForFunction(
+        (prev) => document.querySelectorAll("table tbody tr").length > prev,
+        previousRowCount,
+        { timeout: 20_000 },
+      );
+    } catch {
+      console.warn(
+        `⚠️ Timed out waiting for new rows after ${previousRowCount}. Stopping.`,
+      );
+      break;
+    }
+
+    const newRowCount = await page.locator("table tbody tr").count();
+    previousRowCount = newRowCount;
 
     if (cutoff) {
       const lastRow = page.locator("table tbody tr:last-child");
@@ -207,12 +333,10 @@ async function clickShowMoreUntilStable(
         `Last recorded: ${recordedText} (${lastDate.toISOString()}), cutoff: ${cutoff.toISOString()}`,
       );
 
-      // Give a 1-minute cushion so rows exactly at the cutoff still load.
       if (lastDate.getTime() < cutoff.getTime()) break;
     }
-
-    previousRowCount = currentRowCount;
   }
+
   console.log("Extracting data...");
 }
 
@@ -237,13 +361,13 @@ function earliestRecordedInstant(inputData: any[]): Date | null {
   const targetInputDir = cliArgs.inputDir || qcInputDir;
 
   const inputData: any[] = await loadInputData(targetInputDir, cliArgs.type);
-  const results: Session[] = [];
+  const results: SessionWithDuplicate[] = [];
   const links: (string | null)[] = [];
 
   const cutoff = earliestRecordedInstant(inputData);
   if (!cutoff) throw new Error("No input entries to process");
 
-  const browser: Browser = await chromium.launch({ headless: true });
+  const browser: Browser = await chromium.launch({ headless: false });
   const page: Page | null = await browser.newPage();
 
   const email = process.env.MINUTE_EMAIL;
@@ -271,7 +395,11 @@ function earliestRecordedInstant(inputData: any[]): Date | null {
   // (Debug artefact — writes `allRows`, not the yet-empty `results`.)
   fs.writeFileSync(path.join("allRows.json"), JSON.stringify(allRows, null, 2));
 
-  for (const entry of inputData) {
+  // Drop duplicate sessionIds from the input, keeping the entry whose
+  // `taskType` matches the app's authoritative `task` for that session.
+  const entriesToProcess: any[] = resolveDuplicateTasks(inputData, allRows);
+
+  for (const entry of entriesToProcess) {
     // Use the entry's own link if present, otherwise look it up.
     const fullLink =
       entry.link && entry.link !== ""
@@ -323,6 +451,8 @@ function earliestRecordedInstant(inputData: any[]): Date | null {
       sessionId: entry.sessionId || extractSessionId(fullLink) || "",
       link: fullLink,
       ...(personalGmail && { personalGmail: true }),
+      ...(entry.duplicate && { duplicate: true }),
+      ...(entry.new && { new: true }),
       ratings: {
         lighting: "",
         sharpness: "",

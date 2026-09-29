@@ -50,7 +50,10 @@ export async function loginToMinuteApp(
   keepSignedIn = true,
 ): Promise<void> {
   await page.goto("https://useminute.app/");
-  await page.locator('a[href="/login"]:has-text("Log in")').click();
+
+  // await page.locator('a[href="/login"]:has-text("Log in")').click();
+  await page.getByRole("banner").getByRole("link", { name: "Log in" }).click();
+
   await page.locator("#email").waitFor({ state: "visible" });
   await page.fill("#email", email);
   await page.fill("#password", password);
@@ -219,7 +222,7 @@ export async function getAllSessionRows(page: Page): Promise<SessionRow[]> {
     });
   }
 
-  console.log(sessionData, "sessionData");
+  // console.log(sessionData, "sessionData");
   return sessionData;
 }
 

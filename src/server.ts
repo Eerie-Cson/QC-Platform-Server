@@ -72,6 +72,7 @@ app.get("/api/export-csv", (req: Request, res: Response) => {
       minutes_collected: s.minutes,
       "Date Recorded": s.recordedTimestamp,
       "Date Uploaded": s.uploadedTimestamp,
+      "New Account": s.new ? "Yes" : "", // ← add this
       Lighting: s.ratings?.lighting || "",
       Sharpness: s.ratings?.sharpness || "",
       Hand_visibility: s.ratings?.handVisibility || "",
@@ -119,10 +120,13 @@ app.post("/api/crosscheck-ratings", (req: Request, res: Response) => {
     const sessions = JSON.parse(raw);
 
     // Optional: check link mismatch
-    const wrongLinks = sessions.map(
-      (s: Session) => s.sessionId !== extractSessionId(s.link),
-    );
-    if (wrongLinks.length === 0) console.log(`Incorrect links: ${wrongLinks}`);
+    const wrongLinks = sessions
+      .filter((s: Session) => s.sessionId !== extractSessionId(s.link))
+      .map((s: Session) => s.link);
+
+    if (wrongLinks.length > 0) {
+      console.log(`Incorrect links (${wrongLinks.length}):`, wrongLinks);
+    }
 
     const session = sessions.find((s: any) => s.sessionId === sessionId);
     if (session) {

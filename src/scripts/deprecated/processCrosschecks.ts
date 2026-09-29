@@ -1,8 +1,11 @@
 import fs from "fs";
 import path from "path";
-import { csvToJson } from "../utilities/csvToJson";
-import { CROSSCHECK_INPUT_DIR, CROSSCHECK_OUTPUT_DIR } from "../config/paths";
-import { Session, Ratings, FlatRow } from "../types";
+import { csvToJson } from "../../utilities/csvToJson";
+import {
+  CROSSCHECK_INPUT_DIR,
+  CROSSCHECK_OUTPUT_DIR,
+} from "../../config/paths";
+import { Session, Ratings, FlatRow } from "../../types";
 
 function transformToSessions(flatRows: any[]): Session[] {
   return flatRows.map((row) => ({

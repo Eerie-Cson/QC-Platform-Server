@@ -71,6 +71,7 @@ export type Session = Entry & {
   ratings: Ratings;
   systemRating?: SystemRating; // undefined means "None" (not set)
   personalGmail?: boolean;
+  new?: boolean;
 };
 
 export type SessionRow = Omit<
@@ -110,3 +111,6 @@ export type FlatRow = Omit<Session, "ratings"> & {
 
 // For CSV column mapping
 export type ColumnMapping = Record<string, string>;
+export type SessionWithDuplicate = Session & {
+  duplicate?: boolean;
+};
