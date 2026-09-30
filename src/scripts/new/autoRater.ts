@@ -109,6 +109,7 @@ function writeResultsFile(jsonPath: string, data: Entity[]): void {
   let alreadyDone = 0;
   let skippedProcessing = 0;
   let skippedNewAccount = 0;
+  let inProgress = 0;
 
   for (const [index, entity] of data.entries()) {
     const targetSessionId: string = entity.sessionId;
@@ -149,9 +150,15 @@ function writeResultsFile(jsonPath: string, data: Entity[]): void {
 
     const allRatingsFilled = ratingKeys.every((k) => !isEmpty(ratings[k]));
 
-    if (!allRatingsFilled) {
+    if (
+      hasAnyRating &&
+      !allRatingsFilled &&
+      ratings.other !== Other.Processing &&
+      ratings.other !== Other.Unavailable
+    ) {
       console.log("  ⏭ Skipping: one or more fields is/are not rated.");
       skipped++;
+      inProgress++;
       continue;
     }
 
@@ -285,6 +292,7 @@ function writeResultsFile(jsonPath: string, data: Entity[]): void {
       `  Skipped:            ${skipped}\n` +
       `  Skipped (processing): ${skippedProcessing}\n` +
       `  Skipped (new acct): ${skippedNewAccount}\n` +
+      `  Skipped (In progress): ${inProgress}\n` +
       `  Not Found (rated):  ${skippedRated}\n` +
       `  Failed:             ${failed}\n` +
       `  Total:              ${data.length}`,
